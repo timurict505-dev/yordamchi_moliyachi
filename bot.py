@@ -1060,3 +1060,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+@dp.message(Command("testadmin"))
+async def testadmin_handler(message: Message):
+    await message.answer("testadmin ishladi")
