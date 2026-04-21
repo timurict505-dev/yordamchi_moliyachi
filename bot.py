@@ -21,7 +21,7 @@ from aiogram.types import (
 # =========================
 # SOZLAMALAR
 # =========================
-TOKEN = os.getenv("8681921784:AAEeP2ekwGEGqOJ0QmBopFg7EBnW3Ok4cCY")
+TOKEN = os.getenv("BOT_TOKEN")
 DB_NAME = "finance_v4.db"
 EXPORT_FOLDER = "exports"
 CHART_FOLDER = "charts"
@@ -1061,6 +1061,4 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-@dp.message(Command("testadmin"))
-async def testadmin_handler(message: Message):
-    await message.answer("testadmin ishladi")
+
