@@ -106,7 +106,7 @@ def today_key() -> str:
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    return user_id == 1165988187
 
 
 async def build_category_keyboard(user_id: int, tx_type: str) -> ReplyKeyboardMarkup:
