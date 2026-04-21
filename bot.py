@@ -21,10 +21,11 @@ from aiogram.types import (
 # =========================
 # SOZLAMALAR
 # =========================
-TOKEN = "8681921784:AAEeP2ekwGEGqOJ0QmBopFg7EBnW3Ok4cCY"
-DB_NAME = "finance_v3.db"
+TOKEN = os.getenv("8681921784:AAEeP2ekwGEGqOJ0QmBopFg7EBnW3Ok4cCY")
+DB_NAME = "finance_v4.db"
 EXPORT_FOLDER = "exports"
 CHART_FOLDER = "charts"
+ADMIN_ID = 1165988187  # BU YERGA O'Z TELEGRAM ID INGIZNI YOZING
 
 os.makedirs(EXPORT_FOLDER, exist_ok=True)
 os.makedirs(CHART_FOLDER, exist_ok=True)
@@ -36,9 +37,8 @@ dp = Dispatcher()
 DEFAULT_INCOME_CATEGORIES = ["💼 Oylik", "🛒 Savdo", "💸 Qo‘shimcha daromad"]
 DEFAULT_EXPENSE_CATEGORIES = ["🍽 Oziq-ovqat", "🚕 Transport", "🏠 Uy", "💊 Sog‘liq", "🎯 Boshqa"]
 
-
 # =========================
-# KLAVIATURA
+# KLAVIATURALAR
 # =========================
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
@@ -48,6 +48,16 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="👤 Profil"), KeyboardButton(text="💰 Budjet limiti")],
         [KeyboardButton(text="🗂 Kategoriya qo‘shish"), KeyboardButton(text="🧾 Kategoriyalarim")],
         [KeyboardButton(text="ℹ️ Yordam")],
+    ],
+    resize_keyboard=True,
+)
+
+admin_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👥 Foydalanuvchilar soni"), KeyboardButton(text="📊 Umumiy statistika")],
+        [KeyboardButton(text="🏆 Top foydalanuvchilar"), KeyboardButton(text="🔎 User qidirish")],
+        [KeyboardButton(text="📁 Barcha ma’lumotlarni export")],
+        [KeyboardButton(text="⬅️ Oddiy menyu")],
     ],
     resize_keyboard=True,
 )
@@ -66,24 +76,19 @@ category_type_menu = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-
 # =========================
 # HOLATLAR
 # =========================
 class FinanceState(StatesGroup):
     choosing_income_category = State()
     entering_income_amount = State()
-
     choosing_expense_category = State()
     entering_expense_amount = State()
-
     entering_date_for_view = State()
-
     entering_budget_limit = State()
-
     choosing_custom_category_type = State()
     entering_custom_category_name = State()
-
+    entering_user_search = State()
 
 # =========================
 # YORDAMCHI FUNKSIYALAR
@@ -100,12 +105,15 @@ def today_key() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+
 async def build_category_keyboard(user_id: int, tx_type: str) -> ReplyKeyboardMarkup:
     user_categories = await get_categories(user_id, tx_type)
     keyboard = [[KeyboardButton(text=cat)] for cat in user_categories]
     keyboard.append([KeyboardButton(text="⬅️ Bekor qilish")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
-
 
 # =========================
 # BAZA
@@ -122,7 +130,6 @@ async def init_db():
             )
             """
         )
-
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS transactions (
@@ -135,7 +142,6 @@ async def init_db():
             )
             """
         )
-
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS budgets (
@@ -147,7 +153,6 @@ async def init_db():
             )
             """
         )
-
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS categories (
@@ -337,6 +342,93 @@ async def get_profile_info(user_id: int):
     return user, tx_count
 
 
+async def get_total_users_count():
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM users")
+        total = (await cursor.fetchone())[0]
+    return total
+
+
+async def get_today_new_users_count():
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM users WHERE substr(created_at, 1, 10) = ?",
+            (today_key(),),
+        )
+        total = (await cursor.fetchone())[0]
+    return total
+
+
+async def get_active_users_count(year_month: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM transactions WHERE substr(created_at, 1, 7) = ?",
+            (year_month,),
+        )
+        total = (await cursor.fetchone())[0]
+    return total
+
+
+async def get_global_stats(year_month: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM transactions")
+        tx_count = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'income' AND substr(created_at, 1, 7) = ?",
+            (year_month,),
+        )
+        income = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = 'expense' AND substr(created_at, 1, 7) = ?",
+            (year_month,),
+        )
+        expense = (await cursor.fetchone())[0]
+
+    return tx_count, income, expense, income - expense
+
+
+async def get_top_users(limit: int = 10):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """
+            SELECT u.user_id, u.full_name, u.username, COUNT(t.id) AS tx_count, COALESCE(SUM(t.amount), 0) AS total_amount
+            FROM users u
+            LEFT JOIN transactions t ON u.user_id = t.user_id
+            GROUP BY u.user_id, u.full_name, u.username
+            ORDER BY tx_count DESC, total_amount DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+    return rows
+
+
+async def search_users(keyword: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        if keyword.isdigit():
+            cursor = await db.execute(
+                "SELECT user_id, full_name, username, created_at FROM users WHERE CAST(user_id AS TEXT) LIKE ? LIMIT 10",
+                (f"%{keyword}%",),
+            )
+        else:
+            kw = f"%{keyword.lower()}%"
+            cursor = await db.execute(
+                """
+                SELECT user_id, full_name, username, created_at
+                FROM users
+                WHERE lower(full_name) LIKE ? OR lower(username) LIKE ?
+                ORDER BY created_at DESC
+                LIMIT 10
+                """,
+                (kw, kw),
+            )
+        rows = await cursor.fetchall()
+    return rows
+
+
 async def check_budget_warning(user_id: int):
     ym = month_key()
     limit_amount = await get_budget_limit(user_id, ym)
@@ -346,12 +438,16 @@ async def check_budget_warning(user_id: int):
     _, expense, _ = await get_monthly_summary(user_id, ym)
     if expense > limit_amount:
         over = expense - limit_amount
-        return f"⚠️ Diqqat! Siz bu oy budjet limitidan oshdingiz.\n\n💸 Limit: {limit_amount:,.0f} so'm\n📉 Xarajat: {expense:,.0f} so'm\n❗ Oshgan qism: {over:,.0f} so'm"
+        return (
+            f"⚠️ Diqqat! Siz bu oy budjet limitidan oshdingiz.\n\n"
+            f"💸 Limit: {limit_amount:,.0f} so'm\n"
+            f"📉 Xarajat: {expense:,.0f} so'm\n"
+            f"❗ Oshgan qism: {over:,.0f} so'm"
+        )
     return None
 
-
 # =========================
-# EXCEL EXPORT
+# EXCEL
 # =========================
 def create_excel_file(user_id: int, rows: list):
     if not rows:
@@ -361,7 +457,7 @@ def create_excel_file(user_id: int, rows: list):
     df["Oy"] = df["Sana"].astype(str).str.slice(0, 7)
     df["Kun"] = df["Sana"].astype(str).str.slice(0, 10)
 
-    file_path = os.path.join(EXPORT_FOLDER, f"finance_v3_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+    file_path = os.path.join(EXPORT_FOLDER, f"finance_v4_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
 
     with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Transactions", index=False)
@@ -396,8 +492,26 @@ def create_excel_file(user_id: int, rows: list):
     return file_path
 
 
+async def create_all_data_excel():
+    async with aiosqlite.connect(DB_NAME) as db:
+        users_cursor = await db.execute("SELECT user_id, full_name, username, created_at FROM users ORDER BY created_at DESC")
+        users_rows = await users_cursor.fetchall()
+
+        tx_cursor = await db.execute("SELECT id, user_id, type, category, amount, created_at FROM transactions ORDER BY created_at DESC")
+        tx_rows = await tx_cursor.fetchall()
+
+        budgets_cursor = await db.execute("SELECT user_id, year_month, limit_amount FROM budgets ORDER BY year_month DESC")
+        budgets_rows = await budgets_cursor.fetchall()
+
+    file_path = os.path.join(EXPORT_FOLDER, f"admin_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+    with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+        pd.DataFrame(users_rows, columns=["user_id", "full_name", "username", "created_at"]).to_excel(writer, sheet_name="Users", index=False)
+        pd.DataFrame(tx_rows, columns=["id", "user_id", "type", "category", "amount", "created_at"]).to_excel(writer, sheet_name="Transactions", index=False)
+        pd.DataFrame(budgets_rows, columns=["user_id", "year_month", "limit_amount"]).to_excel(writer, sheet_name="Budgets", index=False)
+    return file_path
+
 # =========================
-# DIAGRAMMA
+# DIAGRAMMALAR
 # =========================
 def create_chart(user_id: int, income: float, expense: float, category_rows: list):
     paths = []
@@ -426,9 +540,8 @@ def create_chart(user_id: int, income: float, expense: float, category_rows: lis
 
     return paths
 
-
 # =========================
-# OY OXIRI AVTOMATIK YUBORISH
+# OY OXIRI HISOBOTI
 # =========================
 async def send_monthly_report_to_user(user_id: int):
     ym = month_key()
@@ -490,19 +603,33 @@ async def monthly_scheduler():
 
         await asyncio.sleep(60)
 
-
 # =========================
 # HANDLERLAR
 # =========================
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     await register_user(message)
-    await message.answer(
+    text = (
         "Assalomu alaykum!\n\n"
         "Men sizning moliyaviy botingizman.\n"
-        "Daromad, xarajat, budjet va hisobotlarni yuritishda yordam beraman.",
-        reply_markup=main_menu,
+        "Daromad, xarajat, budjet va hisobotlarni yuritishda yordam beraman."
     )
+    if is_admin(message.from_user.id):
+        text += "\n\n🔐 Siz admin sifatida ham kirdingiz. /admin ni bossangiz admin menyu ochiladi."
+    await message.answer(text, reply_markup=main_menu)
+
+
+@dp.message(Command("admin"))
+async def admin_panel_handler(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Siz admin emassiz.")
+        return
+    await message.answer("🔐 Admin panel ochildi.", reply_markup=admin_menu)
+
+
+@dp.message(F.text == "⬅️ Oddiy menyu")
+async def back_to_main_menu(message: Message):
+    await message.answer("Oddiy menyuga qaytdingiz.", reply_markup=main_menu)
 
 
 @dp.message(Command("help"))
@@ -519,8 +646,109 @@ async def help_handler(message: Message):
         "7) Oy oxirida avtomatik hisobot yuborish\n"
         "8) Profilni ko‘rsatish\n"
         "9) Budjet limitini saqlash\n"
-        "10) O‘z kategoriyangizni qo‘shish"
+        "10) O‘z kategoriyangizni qo‘shish\n"
+        "11) Admin panel (/admin)"
     )
+
+
+@dp.message(F.text == "👥 Foydalanuvchilar soni")
+async def admin_users_count_handler(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    total = await get_total_users_count()
+    today_new = await get_today_new_users_count()
+    active = await get_active_users_count(month_key())
+    await message.answer(
+        f"👥 Foydalanuvchilar statistikasi\n\n"
+        f"Jami foydalanuvchilar: {total}\n"
+        f"Bugun yangi qo‘shilganlar: {today_new}\n"
+        f"Joriy oy aktiv userlar: {active}"
+    )
+
+
+@dp.message(F.text == "📊 Umumiy statistika")
+async def admin_global_stats_handler(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    ym = month_key()
+    total_users = await get_total_users_count()
+    active_users = await get_active_users_count(ym)
+    tx_count, income, expense, balance = await get_global_stats(ym)
+    await message.answer(
+        f"📊 Umumiy statistika\n\n"
+        f"Oy: {ym}\n"
+        f"Jami userlar: {total_users}\n"
+        f"Aktiv userlar: {active_users}\n"
+        f"Jami tranzaksiyalar: {tx_count}\n"
+        f"Joriy oy daromad: {income:,.0f} so'm\n"
+        f"Joriy oy xarajat: {expense:,.0f} so'm\n"
+        f"Joriy oy balans: {balance:,.0f} so'm"
+    )
+
+
+@dp.message(F.text == "🏆 Top foydalanuvchilar")
+async def admin_top_users_handler(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    rows = await get_top_users(10)
+    if not rows:
+        await message.answer("Hali foydalanuvchilar yo‘q.")
+        return
+
+    text = "🏆 Top foydalanuvchilar\n\n"
+    for i, row in enumerate(rows, start=1):
+        user_id, full_name, username, tx_count, total_amount = row
+        uname = f"@{username}" if username else "yo‘q"
+        text += (
+            f"{i}) {full_name or 'Noma’lum'} | {uname}\n"
+            f"ID: {user_id}\n"
+            f"Tranzaksiya: {tx_count}\n"
+            f"Jami summa: {total_amount:,.0f} so'm\n\n"
+        )
+    await message.answer(text)
+
+
+@dp.message(F.text == "🔎 User qidirish")
+async def admin_search_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.set_state(FinanceState.entering_user_search)
+    await message.answer("Foydalanuvchi ism, username yoki ID sini kiriting:", reply_markup=cancel_menu)
+
+
+@dp.message(FinanceState.entering_user_search)
+async def admin_search_result(message: Message, state: FSMContext):
+    if message.text == "⬅️ Bekor qilish":
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=admin_menu)
+        return
+
+    rows = await search_users(message.text.strip())
+    if not rows:
+        await message.answer("Hech narsa topilmadi.", reply_markup=admin_menu)
+        await state.clear()
+        return
+
+    text = "🔎 Qidiruv natijalari\n\n"
+    for row in rows:
+        user_id, full_name, username, created_at = row
+        uname = f"@{username}" if username else "yo‘q"
+        text += (
+            f"ID: {user_id}\n"
+            f"Ism: {full_name}\n"
+            f"Username: {uname}\n"
+            f"Ro‘yxatdan o‘tgan: {created_at}\n\n"
+        )
+    await message.answer(text, reply_markup=admin_menu)
+    await state.clear()
+
+
+@dp.message(F.text == "📁 Barcha ma’lumotlarni export")
+async def admin_export_all_handler(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    file_path = await create_all_data_excel()
+    await message.answer_document(FSInputFile(file_path), caption="✅ Admin eksport tayyor.")
 
 
 @dp.message(F.text == "👤 Profil")
@@ -722,10 +950,7 @@ async def expense_amount_entered(message: Message, state: FSMContext):
 @dp.message(F.text == "📅 Sana bo‘yicha ko‘rish")
 async def date_view_start(message: Message, state: FSMContext):
     await state.set_state(FinanceState.entering_date_for_view)
-    await message.answer(
-        "Sanani kiriting: YYYY-MM-DD\nMasalan: 2026-04-21",
-        reply_markup=cancel_menu,
-    )
+    await message.answer("Sanani kiriting: YYYY-MM-DD\nMasalan: 2026-04-21", reply_markup=cancel_menu)
 
 
 @dp.message(FinanceState.entering_date_for_view)
@@ -820,10 +1045,8 @@ async def powerbi_info_handler(message: Message):
         "2) Summary\n"
         "3) ExpenseByCategory\n"
         "4) MonthlyData\n"
-        "5) DailyData\n\n"
-        "Keyingi bosqichda men sizga Power BI dashboard structure ham beraman."
+        "5) DailyData"
     )
-
 
 # =========================
 # MAIN
